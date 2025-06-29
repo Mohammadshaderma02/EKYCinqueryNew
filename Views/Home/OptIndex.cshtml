@@ -1,0 +1,406 @@
+﻿<div>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>National ID / Personal Number</th>
+                <th>Session ID</th>
+                <th>OCR File</th>
+@*                 <th>Liveness Output</th>
+ *@@*                 <th>Face Match Threshold</th>
+ *@                <th>Liveness Threshold</th>
+                <th>Audit Content</th>
+                <th>Line Information</th>
+                <th>Media</th>
+                <th>Session Steps</th>
+                <th>Current Step</th>
+                <th>Chaneel  Name</th>
+                <th>Logs</th>
+                <th>Transaction Time</th>
+                <th>Status</th>
+@*                 <th>Accura Result</th>
+ *@            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<div id="SessionStep-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Session Steps</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="SessionStep-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="LivenessOutput-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Session Steps</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="LivenessOutput-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="audit-content-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Audit Content</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="audit-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="media-result-modal" tabindex="-1" aria-labelledby="media-modal" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="media-result-modal-label">Session Media</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="line-information-modal" class="modal fade">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="validation-result-modal-label">Line Information</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <p>
+                        Simcard Number: <b><span id="line-simcard-number"></span></b>
+                    </p>
+                    <p>
+                        MSISDN: <b><span id="line-msisdn"></span></b>
+                    </p>
+                    <p>
+                        Passport Barcode: <b><span id="line-passport-barcode"></span></b>
+                    </p>
+                    <p>
+                        Kitcode: <b><span id="line-kitcode"></span></b>
+                    </p>
+                    <p>
+                        Line Type: <b><span id="line-type"></span></b>
+                    </p>
+                    <p>
+                        Market Type: <b><span id="line-market-type"></span></b>
+                    </p>
+                    <p>
+                        Sim Card Type: <b><span id="line-simcard-type"></span></b>
+                    </p>
+                    <p>
+                        Reference Number: <b><span id="line-reference-number"></span></b>
+                    </p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="ocr-file-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="validation-result-modal-label">OCR File Visualizer</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="json-viewer-test">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="download-ocr-file">Download</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="liveness-thrshold-content-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Audit Content</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="liveness-threshold-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div id="facematch-threshold-content-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Audit Content</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="facematch-threshold-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+
+<div id="MediaTemplate" class="d-none">
+    <span class="media-title"></span>: <a href="#" class="download-media">Download</a>
+</div>
+
+
+@section Scripts {
+    <script defer>
+         function downloadFile(blob, fileName) {
+            const href = URL.createObjectURL(blob);
+            const a = Object.assign(document.createElement("a"), {
+                href,
+                style: "display:none",
+                download: fileName
+            });
+            document.body.appendChild(a);
+            a.click();
+            URL.revokeObjectURL(href);
+            a.remove();
+        }
+
+        $(document).ajaxStart(function () {
+            $("#preloader").show();
+        });
+        $(document).ajaxStop(function () {
+            $("#preloader").hide();
+        });
+
+        $("table").on("click","[data-type]", async function () {
+            let uid = $(this).data("session-id");
+            let id = $(this).data("id");
+            let tokenId = $(this).data("token-id");
+            let type = $(this).data("type");
+            
+            let data = {
+                uid: uid,
+                id: id,
+                tokenId: tokenId
+            };
+            $("#preloader").show();
+            if (type == "AuditContent"){
+                let auditResponse = await fetch('@Url.Action("GetAuditData", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let auditJSON = await auditResponse.json();
+                auditJSON = JSON.parse(auditJSON.data);
+                 new JsonViewer({ value: auditJSON }).render('#audit-content');
+                $("#audit-content-modal").modal("show");
+                $("#preloader").hide();
+            }
+            else if (type == "OCRFile"){
+                 let ocrFile = await fetch('@Url.Action("GetOCRFile", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let ocrJSON = await ocrFile.json();
+                ocrJSON = JSON.parse(ocrJSON.data);
+                new JsonViewer({ value: ocrJSON }).render('#json-viewer-test');
+                $("#download-ocr-file").data("src", ocrJSON);
+                $("#ocr-file-modal").modal("show");
+                $("#preloader").hide();
+
+            }
+            else if (type == "LivenesssOutput"){
+                let livenessOutput = await fetch('@Url.Action("GetLivenessOutput", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let livenessOutputJSON = await livenessOutput.json();
+                livenessOutputJSON = JSON.parse(livenessOutputJSON.data);
+                new JsonViewer({ value: livenessOutputJSON }).render('#LivenessOutput-content');
+                $("#LivenessOutput-modal").modal("show");
+                $("#preloader").hide();
+            }
+            else if (type == "Media"){
+                let media = await fetch('@Url.Action("GetAllMedia", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let mediaJSON = await media.json();
+                mediaJSON = JSON.parse(mediaJSON.data);
+                let elements = mediaJSON.map((datum) => {
+                    console.log(datum);
+                    let htmlTxt = $("#MediaTemplate")[0].outerHTML;
+                    let htmlEl = $(htmlTxt);
+                    htmlEl.data("src", datum);
+                    htmlEl.find("span").text(datum.Name);
+                    return htmlEl;
+                });
+                $("#media-result-modal .modal-body").html("");
+                $("#media-result-modal .modal-body").append(elements);
+                $("#media-result-modal .d-none").removeClass("d-none");
+                $("#media-result-modal").modal("show");
+                $("#preloader").hide();
+            }
+            else if (type == "SessionSteps"){
+                let sessionSteps = await fetch('@Url.Action("GetSessionSteps", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let sessionStepsJSON = await sessionSteps.json();
+                sessionStepsJSON = JSON.parse(sessionStepsJSON.data);
+                new JsonViewer({ value: sessionStepsJSON }).render('#SessionStep-content');
+                $("#SessionStep-modal").modal("show");
+                $("#preloader").hide();
+            }
+            else if (type == "LineInformation"){
+                let lineInfo = await fetch('@Url.Action("GetLineInformation", "Home")', {
+                    method: "POST",
+                    body: JSON.stringify(data),
+                    headers: {
+                        "Content-Type": "application/json",
+                    }
+                });
+                let lineInfoJSON = await lineInfo.json();
+                lineInfoJSON = JSON.parse(lineInfoJSON.data);
+                console.log(lineInfoJSON);
+                $("#line-simcard-number").text(lineInfoJSON.SimCard);
+                $("#line-msisdn").text(lineInfoJSON.Msisdn);
+                $("#line-passport-barcode").text(lineInfoJSON.PassportBarcode);
+                $("#line-kitcode").text(lineInfoJSON.Kitcode);
+                $("#line-type").text(lineInfoJSON.LineType);
+                $("#line-market-type").text(lineInfoJSON.MarketType);
+                $("#line-simcard-type").text(lineInfoJSON.SimCardType);
+                $("#line-reference-number").text(lineInfoJSON.ReferenceNumber);
+                $("#line-information-modal").modal("show");
+                $("#preloader").hide();
+            }
+            else if (type == "LivenessThreshold"){
+                let dataObject = $(this).data("object");
+                //dataObject = JSON.parse(dataObject);
+                new JsonViewer({ value: dataObject }).render('#facematch-threshold-content');
+                $("#facematch-threshold-content-modal").modal("show");                
+                $("#preloader").hide();
+
+
+            }
+            else if (type == "FaceMatchThreshold"){
+                let dataObject = $(this).data("object");
+                //dataObject = JSON.parse(dataObject);
+                new JsonViewer({ value: dataObject }).render('#liveness-threshold-content');
+                $("#liveness-thrshold-content-modal").modal("show");
+                                $("#preloader").hide();
+
+            }
+        });
+
+        $("#media-result-modal").on("click", ".download-media", function () {
+            let data = $(this).parent().data("src");
+            console.log(data);
+            $("#preloader").show();
+            fetch('@Url.Action("GetMediaFile", "Home")', {
+                method: "POST",
+                body: JSON.stringify(data),
+                headers: {
+                    "Content-Type": "application/json",
+                }
+            })
+                .then((response) => response.blob())
+                .then((file) => {
+                    downloadFile(file, data.Filename);
+                    $("#preloader").hide();
+                })
+                .catch((err) => console.log(err))
+        });
+
+        $("#download-ocr-file").on("click", function () {
+            let data = $(this).data("src");
+            downloadFile(new Blob([JSON.stringify(data)]), "ocr_file_" + data.userGivenNames + "_" + data.uuid + ".txt");
+        });
+
+         let table = $("table").DataTable({
+            sorting: false,
+            lengthChange: true,
+            serverSide: true,
+            ajax: {
+                url: '@Url.Action("GetIndexData", "Home")',
+                type: 'POST',
+                
+            },
+            searching: true,
+            search: {
+                return: true
+            },
+            ordering: false,
+            preDrawCallBack: function (settings) {
+                $("#preloader").show();
+            },
+            drawCallBack: function (settings) {
+                $("#preloader").hide();
+            },
+        });
+    </script>
+}

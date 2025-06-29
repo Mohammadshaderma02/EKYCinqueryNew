@@ -1,0 +1,117 @@
+﻿@using EkycInquiry.Models.ViewModel
+@model TRCSessionModel
+@{
+    ViewData["Title"] = "Daily Report";
+}
+
+<div>
+
+    <div class="summary">
+        <p><b>Number Of Activated Lines: </b>@Model.NumberOfActivatedLines</p>
+        <p><b>Number Of Sanad Lines: </b>@Model.NumberOfSanadActivatedLines</p>
+        <p><b>Number Of Failed Activations (Per Session): </b>@Model.NumberOfFailedActivations</p>
+        <p><b>Number of Failed Activations (Per National Number / Passport Number):</b>@Model.NumberOfFailedActivationsPerNationalNumberOrDocumentNumber</p>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>
+                    Name
+                </th>
+                <th>
+                    National Number / Passport Number
+                </th>
+                <th>
+                    Date Of Birth
+                </th>
+                <th>
+                    Activation Type
+                </th>
+                <th>
+                    Status
+                </th>
+                <th>
+                    Simcard
+                </th>
+                <th>
+                    MSISDN
+                </th>
+                <th>
+                    Nationality (Jordanian / Non Jordanian)
+                </th>
+                <th>
+                    Session ID
+                </th>
+                <th>
+                    Current Step
+                </th>
+                <th>
+                    Date
+                </th>
+                <th>
+                    Status
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var sess in Model.Sessions)
+            {
+                <tr>
+                    <td>
+                        @sess.FullName
+                    </td>
+                    <td>
+                        @sess.NationalID
+                    </td>
+                    <td>
+                       @sess.DateOfBirth
+                    </td>
+                    <td>
+                        @sess.ActivationType
+                    </td>
+                    <td>
+                        @sess.Status
+                    </td>
+                    <td>
+                        @sess.Simcard
+                    </td>
+                    <td>
+                        @sess.MSISDN
+                    </td>
+                    <td>
+                        @(sess.IsJordanian ? "Jordanian" : "Non Jordanian")
+                    </td>
+                    <td>
+                        @sess.SessionID
+                    </td>
+                    <td>
+                        @sess.CurrentStep
+                    </td>
+                    <td data-sort="@sess.ActivationDateTicks">
+                        @sess.ActivationDate
+                    </td>
+                    <td>
+                        @sess.status
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+
+
+@section Scripts{
+    <script defer>
+        $("table").DataTable({
+            order: [[10, 'desc']],
+            layout: {
+                topStart: {
+                    buttons: ['excel']
+                }
+            }
+        });
+
+    </script>
+}

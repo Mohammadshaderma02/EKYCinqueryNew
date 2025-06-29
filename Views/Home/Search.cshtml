@@ -1,0 +1,48 @@
+﻿@model EkycInquiry.Models.ViewModel.SearchViewModel
+@{
+    ViewData["Title"] = "Search";
+}
+
+<h1>Search</h1>
+
+@if (Model.Result == null)
+{
+    <form asp-action="Search" asp-controller="Home">
+        <select name="SearchCategory">
+            <option value="SessionID">Session ID</option>
+            <option value="NationalNumber">National Number</option>
+            <option value="NameEN">Name (English)</option>
+        </select>
+        <input type="text" name="SeachValue" placeholder="Search Value" />
+        <button type="submit">Search</button>
+    </form>
+}
+else
+{
+    <div>
+        <p>
+            MRZ Data: @Model.Result.OcrData?.mrzCode
+        </p>
+        <p>
+            Full Name: @Model.Result.OcrData?.userGivenNames
+        </p>
+        <p>
+            ID Expiry: @Model.Result.OcrData?.documentExpirationDate
+        </p>
+        <p>
+            Gender: @Model.Result.OcrData?.userSex
+        </p>
+        <p>
+           Blood Type: @Model.Result.OcrData?.userBloodGroup
+        </p>
+        <p>
+            National ID Number: @Model.Result.OcrData?.documentNumber
+        </p>
+        <p>
+            Document Type: @Model.Result.OcrData?.documentType
+        </p>
+        <p>
+            User Image: <img src="@Model.Result.OcrData?.userPicture" />
+        </p>
+    </div>
+}

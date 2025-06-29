@@ -1,0 +1,327 @@
+﻿@{
+    ViewData["Title"] = "Summary";
+}
+<div class="w-100 d-flex flex-column justify-content-center">
+    <div class="w-100 d-flex justify-content-between">
+        <h2>
+            eKYC Summary Dashboard.
+        </h2>
+        <div>
+            <p>Select Dates</p>
+            <div class="input-daterange input-group" id="datepicker">
+                <input type="text" class="input-sm form-control" name="start" value="01-12-2024" />
+                <span class="input-group-addon">to</span>
+                <input type="text" class="input-sm form-control" name="end" value='@DateTime.Now.ToString("dd-MM-yyyy")' />
+            </div>
+            <button class="btn btn-primary" id="update-button">
+                Update!
+            </button>
+        </div>
+    </div>
+    <div class="time-series-container">
+    </div>
+    <div class="session-steps-container">
+    </div>
+    <div class="session-status-container">
+    </div>
+    <div class="nationality-container">
+    </div>
+    <div class="flow-container">
+    </div>
+    <div class="channel-container">
+    </div>
+</div>
+
+@section Scripts {
+    <script defer>
+        $('.input-daterange').datepicker({
+            format: "dd-mm-yyyy"
+        });
+        $("#update-button").on("click", () => {
+            let from = $("[name='start']").val();
+            let to = $("[name='end']").val();
+            console.log(from);
+            console.log(to);
+            initPage(from,to);
+        });
+        async function initPage(from, to){
+            $("#preloader").show();
+            let summaryData;
+            if (!from && !to){
+                 summaryData = await fetch('@Url.Action("GetSummaryData", "Home")', {
+                    method: "POST"
+                });
+            }
+            else {
+                summaryData = await fetch('@Url.Action("GetSummaryData", "Home")?FromStr='+ from.toString() + "&ToStr=" + to.toString(), {
+                    method: "POST"
+                });
+            }
+            summaryData = await summaryData.json();
+            if (summaryData.status != 0){
+                return;
+            }
+
+            let timeSeriesEl = document.querySelector(".time-series-container");
+            let timeSeriesChart = echarts.init(timeSeriesEl, null, {
+                 width: window.innerWidth - 200,
+                height: 300
+            });
+            let option;
+            option = {
+                title: {
+                    text: 'Activity Over Time'
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: {
+                        type: 'cross',
+                        label: {
+                            backgroundColor: '#6a7985'
+                    }
+                }
+                },
+                legend: {
+                            orient: 'horizontal'
+                },
+                toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }
+            },
+            grid: {
+                left: '3%',
+                right: '4%',
+                bottom: '3%',
+                containLabel: true
+            },
+            xAxis: [
+            {
+              type: 'category',
+              boundaryGap: false,
+              data: summaryData.timeSeriesReport.map((x) => x.session_date)
+            }
+          ],
+          yAxis: [
+            {
+              type: 'value'
+            }
+          ],
+          series: [
+            {
+              name: 'Approved',
+              type: 'line',
+              data: summaryData.timeSeriesReport.map((x) => x.approved_count)
+            },
+            {
+              name: 'Approved (Pending)',
+              type: 'line',
+              data: summaryData.timeSeriesReport.map((x) => x.approval_pending_count)
+            },
+            {
+              name: 'Rejected',
+              type: 'line',
+              data: summaryData.timeSeriesReport.map((x) => x.to_discard_count)
+            }
+          ]
+        };
+            timeSeriesChart.setOption(option);
+
+            let sessionStepsEl = document.querySelector(".session-steps-container");
+            let sessOpts = {
+          title: {
+            text: 'Last Active Session Step Per Session',
+            left: 'center'
+          },
+          tooltip: {
+            trigger: 'item'
+          },
+                          toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }},
+          legend: {
+            orient: 'vertical',
+            left: 'left'
+          },
+          series: [
+            {
+              name: 'Session Step',
+              type: 'pie',
+              radius: '50%',
+              data: summaryData.stepsCount.filter(x => x.lastCompletedStep != "policy" && x.lastCompletedStep != "lets_start").map((x) => ({
+                value: x.count,
+                name: x.lastCompletedStep
+                })),
+              emphasis: {
+                itemStyle: {
+                  shadowBlur: 10,
+                  shadowOffsetX: 0,
+                  shadowColor: 'rgba(0, 0, 0, 0.5)'
+                }
+              }
+            }
+          ]
+        };
+            let sessStepsChart = echarts.init(sessionStepsEl, null, {
+                width: window.innerWidth - 200,
+                height: 300
+            });
+            sessStepsChart.setOption(sessOpts);
+
+            let sessionStetusEl = document.querySelector(".session-status-container");
+            let sessStatusOpts = {
+          title: {
+            text: 'Session Status Of All Sessions',
+            left: 'center'
+          },
+          tooltip: {
+            trigger: 'item'
+          },
+          legend: {
+            orient: 'vertical',
+            left: 'left'
+          },
+                          toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }},
+
+          series: [
+            {
+              name: 'Session Statsues',
+              type: 'pie',
+              radius: '50%',
+              data: summaryData.sessionsCount.map((x) => ({
+                value: x.count,
+                name: x.status
+                })),
+              emphasis: {
+                itemStyle: {
+                  shadowBlur: 10,
+                  shadowOffsetX: 0,
+                  shadowColor: 'rgba(0, 0, 0, 0.5)'
+                }
+              }
+            }
+          ]
+        };
+            let sessStatuesChart = echarts.init(sessionStetusEl, null, {
+                width: window.innerWidth - 200,
+                height: 300
+            });
+            sessStatuesChart.setOption(sessStatusOpts);
+
+            let flowEl = document.querySelector(".flow-container");
+            let flowOpts =  {
+               title: {
+                    text: 'Activation Per Flow'
+                },
+                          tooltip: {
+            trigger: 'item'
+          },
+
+                                          toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }},
+                xAxis: {
+                    type: 'category',
+                    data: summaryData.flowCount.map(x => x.flow)
+                },
+                          legend: {
+            orient: 'vertical',
+            left: 'left'
+          },
+
+                yAxis: {
+                    type: 'value'
+                },
+                series: [
+                {
+                 data: summaryData.flowCount.map(x => x.count),
+                type: 'bar'
+                }   
+            ]
+            };
+            let flowChart = echarts.init(flowEl, null, {
+                width: window.innerWidth - 200,
+                height: 300
+            });
+            flowChart.setOption(flowOpts);
+
+            let nationalityEl = document.querySelector(".nationality-container");
+            let nationalityOpts =  {
+               title: {
+                    text: 'Activation Per Nationality'
+                },
+                          legend: {
+            orient: 'vertical',
+            left: 'left'
+          },
+                    tooltip: {
+            trigger: 'item'
+          },
+
+                                    toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }},
+                xAxis: {
+                    type: 'category',
+                    data: ["Jordanian", "Non Jordanian"]
+                },
+                yAxis: {
+                    type: 'value'
+                },
+                series: [
+                {
+                 data: [summaryData.nationalityComparison.jordanianCustomers, summaryData.nationalityComparison.nonJordanianCustomers],
+                type: 'bar'
+                }
+            ]
+            };
+            let nationalityChart = echarts.init(nationalityEl, null, {
+                width: window.innerWidth - 200,
+                height: 300
+            });
+            nationalityChart.setOption(nationalityOpts);
+
+            let channelEl = document.querySelector(".channel-container");
+            let channelOpts =  {
+               title: {
+                    text: 'Sessions Per Channel'
+                },
+                          tooltip: {
+            trigger: 'item'
+          },
+
+                xAxis: {
+                    type: 'category',
+                    data: ["079.jo", "Integration Layer"]
+                },
+                yAxis: {
+                    type: 'value'
+                },
+                                          toolbox: {
+                    feature: {
+                        saveAsImage: {}
+                }},
+                series: [
+                {
+                 data: [summaryData.channelComparisons.eKYCFlow, summaryData.channelComparisons.integrationFlow],
+                type: 'bar'
+                }
+            ]
+            };
+            let channelChart = echarts.init(channelEl, null, {
+                width: window.innerWidth - 200,
+                height: 300
+            });
+            channelChart.setOption(channelOpts);
+
+            $("#preloader").hide();
+        }
+        initPage();
+    </script>
+}

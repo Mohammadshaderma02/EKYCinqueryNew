@@ -1,0 +1,370 @@
+﻿@using EkycInquiry.Models.ViewModel
+@using Newtonsoft.Json;
+@model List<SessionModel>
+@{
+    ViewData["Title"] = "History";
+}
+
+
+
+<div>
+    <table>
+        <thead>
+            <tr>
+                <th>
+                    National Number / Passport Number
+                </th>
+                <th>
+                    SEQ Logs
+                </th>
+                <th>
+                    Line Information
+                </th>
+                <th>
+                    Audit Content
+                </th>
+                <th>
+                    Date
+                </th>
+
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var sess in Model)
+            {
+                <tr>
+                    <td>@sess.Line?.nationalId</td>
+                    <td>
+                        <a href="http://192.168.190.36/#/events?filter=@sess.Session.Uid" target="_blank">
+                            Go To Logs
+                        </a>
+                    </td>
+                    <td>
+                        <a href="#" data-src="@(JsonConvert.SerializeObject(sess.Line))" data-type="Line">
+                            See Line Information
+                        </a>
+                    </td>
+                    <td>
+                        <a href="#" data-src="@(JsonConvert.SerializeObject(sess.Audits))" data-type="Audit">
+                            See Audit Content
+                        </a>
+                    </td>
+                    <td data-sort="@sess.Session.CreationTime.Ticks">
+                        @sess.Session.CreationTime.ToString("G")
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<div class="modal fade" id="mrz-modal" tabindex="-1" aria-labelledby="mrz-modal" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="mrz-modal-label">MRZ</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="Mrz-content"></div>
+                <div><b>Is Black Listed: <span id="isBlacklisted"></span></b></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="validation-result-modal" tabindex="-1" aria-labelledby="mrz-modal" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="validation-result-modal-label">Validation Result</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <p>
+                        Valid Gender: <b><span id="val-valid-sex"></span></b>
+                    </p>
+                    <p>
+                        Valid Expiry Date: <b><span id="val-valid-expiry-date"></span></b>
+                    </p>
+                    <p>
+                        Valid Date of Birth: <b><span id="val-valid-date-of-birth"></span></b>
+                    </p>
+                    <p>
+                        Valid Document Number: <b><span id="val-valid-document-number"></span></b>
+                    </p>
+                    <p>
+                        Front Symbol Detected: <b><span id="val-front-symbol-detected"></span></b>
+                    </p>
+                    <p>
+                        Back Symbol Detected: <b><span id="val-back-symbol-detected"></span></b>
+                    </p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="audit-content-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Audit Content</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="audit-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="SessionStep-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Session Steps</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="SessionStep-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="LivenessOutput-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Session Steps</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="LivenessOutput-content">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="modal fade" id="media-result-modal" tabindex="-1" aria-labelledby="media-modal" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="media-result-modal-label">Session Media</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="line-information-modal" class="modal fade">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="validation-result-modal-label">Line Information</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div>
+                    <p>
+                        Simcard Number: <b><span id="line-simcard-number"></span></b>
+                    </p>
+                    <p>
+                        MSISDN: <b><span id="line-msisdn"></span></b>
+                    </p>
+                    <p>
+                        Passport Barcode: <b><span id="line-passport-barcode"></span></b>
+                    </p>
+                    <p>
+                        Kitcode: <b><span id="line-kitcode"></span></b>
+                    </p>
+                    <p>
+                        Line Type: <b><span id="line-type"></span></b>
+                    </p>
+                    <p>
+                        Market Type: <b><span id="line-market-type"></span></b>
+                    </p>
+                    <p>
+                        Sim Card Type: <b><span id="line-simcard-type"></span></b>
+                    </p>
+                    <p>
+                        Reference Number: <b><span id="line-reference-number"></span></b>
+                    </p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="ocr-file-modal" class="modal fade">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="validation-result-modal-label">OCR File Visualizer</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="json-viewer-test">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="download-ocr-file">Download</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div id="MediaTemplate" class="d-none">
+    <span class="media-title"></span>: <a href="#" class="download-media">Download</a>
+</div>
+
+
+@section Scripts {
+    <script defer>
+        function downloadFile(blob, fileName) {
+            const href = URL.createObjectURL(blob);
+            const a = Object.assign(document.createElement("a"), {
+                href,
+                style: "display:none",
+                download: fileName
+            });
+            document.body.appendChild(a);
+            a.click();
+            URL.revokeObjectURL(href);
+            a.remove();
+        }
+
+        $("table").DataTable({
+            order: [[12, 'desc']]
+        });
+        $("table").on("click", "[data-src]", function () {
+            console.log($(this).data("src"));
+            let dataSrc = $(this).data("src");
+            let type = $(this).data("type");
+            if (type == "MRZ") {
+                let isBlacklisted = $(this).data("is-blacklisted");
+                $("#isBlacklisted").text(isBlacklisted);
+
+                //MRZ
+                $("#mrz-modal .Mrz-content").text(dataSrc);
+                $("#mrz-modal").modal("show");
+            }
+            else if (type == "Validation") {
+                //Val data.
+                $("#val-valid-sex").text(dataSrc.validSex);
+                $("#val-valid-expiry-date").text(dataSrc.validExpiryDate);
+                $("#val-valid-date-of-birth").text(dataSrc.validDateOfBirth);
+                $("#val-valid-document-number").text(dataSrc.validDocumentNumber);
+                $("#val-front-symbol-detected").text(dataSrc.symbolFrontDetected);
+                $("#val-back-symbol-detected").text(dataSrc.symbolBackDetected);
+                $("#validation-result-modal").modal("show");
+            }
+            else if (type == "Media") {
+                let elements = dataSrc.map((datum) => {
+                    console.log(datum);
+                    let htmlTxt = $("#MediaTemplate")[0].outerHTML;
+                    let htmlEl = $(htmlTxt);
+                    htmlEl.data("src", datum);
+                    htmlEl.find("span").text(datum.Name);
+                    return htmlEl;
+                });
+                console.log(elements);
+                $("#media-result-modal .modal-body").html("");
+                $("#media-result-modal .modal-body").append(elements);
+                $("#media-result-modal .d-none").removeClass("d-none");
+                $("#media-result-modal").modal("show");
+            }
+            else if (type == "OcrFile") {
+                let data = $(this).data("src");
+                $("#download-ocr-file").data("src", data);
+                new JsonViewer({ value: data }).render('#json-viewer-test');
+                Object.keys(data).forEach((k) => data[k] == null && delete data[k]);
+                $("#ocr-file-modal").modal("show");
+            }
+            else if (type == "Line") {
+                let data = $(this).data("src");
+                console.log(data);
+                $("#line-simcard-number").text(data.SimCard);
+                $("#line-msisdn").text(data.Msisdn);
+                $("#line-passport-barcode").text(data.PassportBarcode);
+                $("#line-kitcode").text(data.Kitcode);
+                $("#line-type").text(data.LineType);
+                $("#line-market-type").text(data.MarketType);
+                $("#line-simcard-type").text(data.SimCardType);
+                $("#line-reference-number").text(data.ReferenceNumber);
+                $("#line-information-modal").modal("show");
+            }
+            else if (type == "Audit") {
+                let auditContent = $(this).data("src");
+                //$("#audit-content").text(auditContent);
+                new JsonViewer({ value: auditContent }).render('#audit-content');
+                $("#audit-content-modal").modal("show");
+            }
+            else if (type == "SessionStep") {
+                let SessionStep = $(this).data("src");
+                new JsonViewer({ value: SessionStep }).render('#SessionStep-content');
+                $("#SessionStep-modal").modal("show");
+
+            }
+            else if (type == "LivenessOutput") {
+                let livenessOutput = $(this).data("src");
+                new JsonViewer({ value: livenessOutput }).render('#LivenessOutput-content');
+                $("#LivenessOutput-modal").modal("show");
+            }
+
+        });
+        $("#media-result-modal").on("click", ".download-media", function () {
+            let data = $(this).parent().data("src");
+            console.log(data);
+            $("#preloader").show();
+            fetch('@Url.Action("GetMediaFile", "Home")', {
+                method: "POST",
+                body: JSON.stringify(data),
+                headers: {
+                    "Content-Type": "application/json",
+                }
+            })
+                .then((response) => response.blob())
+                .then((file) => {
+                    downloadFile(file, data.Filename);
+                    $("#preloader").hide();
+                })
+                .catch((err) => console.log(err))
+        });
+        $("#download-ocr-file").on("click", function () {
+            let data = $(this).data("src");
+            downloadFile(new Blob([JSON.stringify(data)]), "ocr_file_" + data.userGivenNames + "_" + data.uuid + ".txt");
+        });
+    </script>
+}

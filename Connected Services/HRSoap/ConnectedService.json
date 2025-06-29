@@ -1,0 +1,18 @@
+{
+  "ExtendedData": {
+    "inputs": [
+      "http://192.168.185.66/HRSelfCareService/HRAPI.asmx?wsdl"
+    ],
+    "collectionTypes": [
+      "System.Array",
+      "System.Collections.Generic.Dictionary`2"
+    ],
+    "messageContract": true,
+    "namespaceMappings": [
+      "*, HRSoap"
+    ],
+    "sync": true,
+    "targetFramework": "net8.0",
+    "typeReuseMode": "None"
+  }
+}
