@@ -8,12 +8,16 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.CodeAnalysis;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Npgsql;
+using NpgsqlTypes;
 using Seq.Api;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
@@ -155,16 +159,29 @@ namespace EkycInquiry.Controllers
                 return Ok(new { Status = -1 });
             }
         }
-
-        // MAJOR OPTIMIZATION: Completely rewritten GetIndexData method with one month limit
+        // MAJOR OPTIMIZATION: Completely rewritten GetIndexData method with proper pagination and filtering
         [HttpPost]
         public async Task<IActionResult> GetIndexData([FromForm] AjaxPostModel Model)
         {
             try
             {
-                int PageNum = Model.start;
-                int PageSize = Model.length;
-                string search = Model?.search?.value?.Trim();
+                int pageNum = Model.start;
+                int pageSize = Model.length;
+                string globalSearch = Model?.search?.value?.Trim();
+
+                // Extract column-specific search values
+                var columnSearches = new Dictionary<string, string>();
+                if (Model.columns != null)
+                {
+                    for (int i = 0; i < Model.columns.Count; i++)
+                    {
+                        var columnSearch = Model.columns[i]?.search?.value?.Trim();
+                        if (!string.IsNullOrEmpty(columnSearch))
+                        {
+                            columnSearches[Model.columns[i].data] = columnSearch;
+                        }
+                    }
+                }
 
                 DateTime oneMonthAgoUtc = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(-30), DateTimeKind.Utc);
 
@@ -174,8 +191,8 @@ namespace EkycInquiry.Controllers
                 var parameters = new List<(string name, object value)>
         {
             ("@oneMonthAgo", oneMonthAgoUtc),
-            ("@PageSize", PageSize),
-            ("@PageNum", PageNum)
+            ("@PageSize", pageSize),
+            ("@Offset", pageNum)
         };
 
                 var whereClauses = new List<string>
@@ -186,25 +203,53 @@ namespace EkycInquiry.Controllers
             @"s.""creationTime"" >= @oneMonthAgo"
         };
 
-                if (!string.IsNullOrEmpty(search))
+                // Global search across all searchable columns
+                if (!string.IsNullOrEmpty(globalSearch))
                 {
-                    var searchParam = $"%{search}%";
-                    parameters.Add(("@search", searchParam));
+                    var globalSearchParam = $"%{globalSearch}%";
+                    parameters.Add(("@globalSearch", globalSearchParam));
 
-                    // Use individual JSONB fields (indexable) and avoid COALESCE
                     whereClauses.Add(@"
                 (
-                    s.""ocrData"" ->> 'userGivenNames' ILIKE @search OR
-                    s.""ocrData"" ->> 'givenNames' ILIKE @search OR
-                    s.""ocrData"" ->> 'userPersonalNumber' ILIKE @search OR
-                    s.""ocrData"" ->> 'documentNumber' ILIKE @search OR
-                    s.""ocrData"" ->> 'nationality' ILIKE @search OR
-                    s.""uid""::text ILIKE @search OR
-                    T.""userCreationEmail"" ILIKE @search
+                    COALESCE(s.""ocrData"" ->> 'userGivenNames', s.""ocrData"" ->> 'givenNames') ILIKE @globalSearch OR
+                    s.""ocrData"" ->> 'userPersonalNumber' ILIKE @globalSearch OR
+                    s.""ocrData"" ->> 'documentNumber' ILIKE @globalSearch OR
+                    s.""ocrData"" ->> 'nationality' ILIKE @globalSearch OR
+                    s.""uid""::text ILIKE @globalSearch OR
+                    s.""status"" ILIKE @globalSearch OR
+                    T.""userCreationEmail"" ILIKE @globalSearch
                 )");
                 }
+
+                // Column-specific searches
+                var paramCounter = 1;
+                foreach (var columnSearch in columnSearches)
+                {
+                    var paramName = $"@colSearch{paramCounter}";
+                    var searchValue = $"%{columnSearch.Value}%";
+                    parameters.Add((paramName, searchValue));
+
+                    var columnClause = columnSearch.Key.ToLower() switch
+                    {
+                        "name" => $"COALESCE(s.\"ocrData\" ->> 'userGivenNames', s.\"ocrData\" ->> 'givenNames') ILIKE {paramName}",
+                        "document_id" => $"s.\"ocrData\" ->> 'userPersonalNumber' ILIKE {paramName}",
+                        "session_id" => $"s.\"uid\"::text ILIKE {paramName}",
+                        "status" => $"s.\"status\" ILIKE {paramName}",
+                        "channel" => $"T.\"userCreationEmail\" ILIKE {paramName}",
+                        "nationality" => $"s.\"ocrData\" ->> 'nationality' ILIKE {paramName}",
+                        _ => null
+                    };
+
+                    if (!string.IsNullOrEmpty(columnClause))
+                    {
+                        whereClauses.Add(columnClause);
+                    }
+                    paramCounter++;
+                }
+
                 string whereClause = string.Join(" AND ", whereClauses);
 
+                // Build the base query
                 string baseQuery = $@"
             SELECT s.id, s.uid, 
                 COALESCE(s.""ocrData"" ->> 'userGivenNames', s.""ocrData"" ->> 'givenNames') as name,
@@ -228,24 +273,24 @@ namespace EkycInquiry.Controllers
             ) sss ON sss.""sessionId"" = s.id
             WHERE {whereClause}";
 
-                // Count query
+                // Get total count efficiently
                 var countQuery = $"SELECT COUNT(*) FROM ({baseQuery}) AS count_alias";
                 using var countCmd = connection.CreateCommand();
                 countCmd.CommandText = countQuery;
-                foreach (var param in parameters.Where(p => p.name != "@PageSize" && p.name != "@PageNum"))
+                foreach (var param in parameters.Where(p => !p.name.Contains("PageSize") && !p.name.Contains("Offset")))
                 {
                     var p = countCmd.CreateParameter();
                     p.ParameterName = param.name;
                     p.Value = param.value;
                     countCmd.Parameters.Add(p);
                 }
-                var totalCount = 1000; //Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+                var totalCount = Convert.ToInt32(await countCmd.ExecuteScalarAsync());
 
-                // Data query with pagination
+                // Data query with proper LIMIT and OFFSET
                 var dataQuery = $@"
             {baseQuery}
             ORDER BY s.id DESC
-            LIMIT @PageSize OFFSET @PageNum";
+            LIMIT @PageSize OFFSET @Offset";
 
                 using var dataCmd = connection.CreateCommand();
                 dataCmd.CommandText = dataQuery;
@@ -266,6 +311,7 @@ namespace EkycInquiry.Controllers
                     var uid = reader.GetString("uid");
                     var name = reader.IsDBNull("name") ? "" : reader.GetString("name");
                     var documentId = reader.IsDBNull("document_id") ? "" : reader.GetString("document_id");
+                    var nationality = reader.IsDBNull("nationality") ? "" : reader.GetString("nationality");
                     var tokenId = reader.IsDBNull("tokenId") ? 0 : reader.GetInt32("tokenId");
                     var creationTime = reader.GetDateTime("creationTime").AddHours(3).ToString("G");
                     var status = reader.IsDBNull("status") ? "" : reader.GetString("status");
@@ -282,17 +328,18 @@ namespace EkycInquiry.Controllers
                 name,
                 documentId,
                 uid,
-                $"<a {actionData} data-type='OCRFile' href='#'>See OCR File</a>",
-                $"<a {actionData} data-type='LivenesssOutput' href='#'>See Liveness Output</a>",
-                $"<a {actionData} data-type='AuditContent' href='#'>See Audit Content</a>",
-                $"<a {actionData} data-type='LineInformation' href='#'>See Line Information</a>",
-                $"<a {actionData} data-type='Media' href='#'>See Media</a>",
-                $"<a {actionData} data-type='SessionSteps' href='#'>See Session Steps</a>",
+                nationality,
+                $"<a {actionData} data-type='OCRFile' href='#' class='btn btn-sm btn-outline-primary'>OCR File</a>",
+                $"<a {actionData} data-type='LivenesssOutput' href='#' class='btn btn-sm btn-outline-info'>Liveness</a>",
+                $"<a {actionData} data-type='AuditContent' href='#' class='btn btn-sm btn-outline-secondary'>Audit</a>",
+                $"<a {actionData} data-type='LineInformation' href='#' class='btn btn-sm btn-outline-success'>Line Info</a>",
+                $"<a {actionData} data-type='Media' href='#' class='btn btn-sm btn-outline-warning'>Media</a>",
+                $"<a {actionData} data-type='SessionSteps' href='#' class='btn btn-sm btn-outline-dark'>Steps</a>",
                 currentStep,
-                channelName, // Added channel information
-                $"<a href='http://192.168.190.36/#/events?filter={uid}' target='_blank'>Go To Logs</a>",
+                channelName,
+                $"<a href='http://192.168.190.36/#/events?filter={uid}' target='_blank' class='btn btn-sm btn-outline-danger'>Logs</a>",
                 creationTime,
-                status
+                GetStatusBadge(status)
             });
                 }
 
@@ -310,6 +357,200 @@ namespace EkycInquiry.Controllers
                 return BadRequest(new { error = ex.Message });
             }
         }
+
+        // Helper method to generate status badges
+        private string GetStatusBadge(string status)
+        {
+            return status?.ToLower() switch
+            {
+                "approved" => "<span class='badge bg-success'>Approved</span>",
+                "approval_pending" => "<span class='badge bg-warning'>Pending</span>",
+                "to_discard" => "<span class='badge bg-danger'>Rejected</span>",
+                "working" => "<span class='badge bg-info'>Working</span>",
+                _ => $"<span class='badge bg-secondary'>{status}</span>"
+            };
+        }
+
+        // Enhanced AjaxPostModel to support column searching
+        public class AjaxPostModel
+        {
+            public int draw { get; set; }
+            public int start { get; set; }
+            public int length { get; set; }
+            public SearchModel search { get; set; }
+            public List<ColumnModel> columns { get; set; }
+        }
+
+        public class SearchModel
+        {
+            public string value { get; set; }
+            public bool regex { get; set; }
+        }
+
+        public class ColumnModel
+        {
+            public string data { get; set; }
+            public string name { get; set; }
+            public bool searchable { get; set; }
+            public bool orderable { get; set; }
+            public SearchModel search { get; set; }
+        }
+
+        // MAJOR OPTIMIZATION: Completely rewritten GetIndexData method with one month limit
+        //[HttpPost]
+        //public async Task<IActionResult> GetIndexData([FromForm] AjaxPostModel Model)
+        //{
+        //    try
+        //    {
+        //        int PageNum = Model.start;
+        //        int PageSize = Model.length;
+        //        string search = Model?.search?.value?.Trim();
+
+        //        DateTime oneMonthAgoUtc = DateTime.SpecifyKind(DateTime.UtcNow.AddDays(-30), DateTimeKind.Utc);
+
+        //        using var connection = WidContext.Database.GetDbConnection();
+        //        await connection.OpenAsync();
+
+        //        var parameters = new List<(string name, object value)>
+        //{
+        //    ("@oneMonthAgo", oneMonthAgoUtc),
+        //    ("@PageSize", PageSize),
+        //    ("@PageNum", PageNum)
+        //};
+
+        //        var whereClauses = new List<string>
+        //{
+        //    @"s.""ocrData"" IS NOT NULL",
+        //    @"jsonb_typeof(s.""ocrData"") = 'object'",
+        //    @"s.""ocrData"" != '{}'::jsonb",
+        //    @"s.""creationTime"" >= @oneMonthAgo"
+        //};
+
+        //        if (!string.IsNullOrEmpty(search))
+        //        {
+        //            var searchParam = $"%{search}%";
+        //            parameters.Add(("@search", searchParam));
+
+        //            // Use individual JSONB fields (indexable) and avoid COALESCE
+        //            whereClauses.Add(@"
+        //        (
+        //            s.""ocrData"" ->> 'userGivenNames' ILIKE @search OR
+        //            s.""ocrData"" ->> 'givenNames' ILIKE @search OR
+        //            s.""ocrData"" ->> 'userPersonalNumber' ILIKE @search OR
+        //            s.""ocrData"" ->> 'documentNumber' ILIKE @search OR
+        //            s.""ocrData"" ->> 'nationality' ILIKE @search OR
+        //            s.""uid""::text ILIKE @search OR
+        //            T.""userCreationEmail"" ILIKE @search
+        //        )");
+        //        }
+        //        string whereClause = string.Join(" AND ", whereClauses);
+
+        //        string baseQuery = $@"
+        //    SELECT s.id, s.uid, 
+        //        COALESCE(s.""ocrData"" ->> 'userGivenNames', s.""ocrData"" ->> 'givenNames') as name,
+        //        s.""ocrData"" ->> 'userPersonalNumber' as document_id,
+        //        s.""ocrData"" ->> 'nationality' as nationality,
+        //        s.""faceMatchThreshold"",
+        //        s.""livenessThreshold"",
+        //        s.""tokenId"",
+        //        s.""creationTime"",
+        //        s.""status"",
+        //        sss.""uid"" AS latest_step_uid,
+        //        T.""userCreationEmail"" as channel_user
+        //    FROM zain.""Session"" s
+        //    INNER JOIN zain.""Token"" T ON T.id = s.""tokenId""
+        //    LEFT JOIN (
+        //        SELECT DISTINCT ON (sw.""sessionId"") ss.uid, sw.""sessionId""
+        //        FROM zain.""SessionStep"" ss
+        //        INNER JOIN zain.""SessionWorkflow"" sw ON sw.id = ss.""sessionWorkflowId""
+        //        WHERE ss.active = true
+        //        ORDER BY sw.""sessionId"", ss.id DESC
+        //    ) sss ON sss.""sessionId"" = s.id
+        //    WHERE {whereClause}";
+
+        //        // Count query
+        //        var countQuery = $"SELECT COUNT(*) FROM ({baseQuery}) AS count_alias";
+        //        using var countCmd = connection.CreateCommand();
+        //        countCmd.CommandText = countQuery;
+        //        foreach (var param in parameters.Where(p => p.name != "@PageSize" && p.name != "@PageNum"))
+        //        {
+        //            var p = countCmd.CreateParameter();
+        //            p.ParameterName = param.name;
+        //            p.Value = param.value;
+        //            countCmd.Parameters.Add(p);
+        //        }
+        //        var totalCount = 1000; //Convert.ToInt32(await countCmd.ExecuteScalarAsync());
+
+        //        // Data query with pagination
+        //        var dataQuery = $@"
+        //    {baseQuery}
+        //    ORDER BY s.id DESC
+        //    LIMIT @PageSize OFFSET @PageNum";
+
+        //        using var dataCmd = connection.CreateCommand();
+        //        dataCmd.CommandText = dataQuery;
+        //        foreach (var param in parameters)
+        //        {
+        //            var p = dataCmd.CreateParameter();
+        //            p.ParameterName = param.name;
+        //            p.Value = param.value;
+        //            dataCmd.Parameters.Add(p);
+        //        }
+
+        //        var results = new List<string[]>();
+        //        using var reader = await dataCmd.ExecuteReaderAsync();
+
+        //        while (await reader.ReadAsync())
+        //        {
+        //            var id = reader.GetInt32("id");
+        //            var uid = reader.GetString("uid");
+        //            var name = reader.IsDBNull("name") ? "" : reader.GetString("name");
+        //            var documentId = reader.IsDBNull("document_id") ? "" : reader.GetString("document_id");
+        //            var tokenId = reader.IsDBNull("tokenId") ? 0 : reader.GetInt32("tokenId");
+        //            var creationTime = reader.GetDateTime("creationTime").AddHours(3).ToString("G");
+        //            var status = reader.IsDBNull("status") ? "" : reader.GetString("status");
+        //            var currentStep = reader.IsDBNull("latest_step_uid") ? "" : reader.GetString("latest_step_uid");
+        //            var channelUser = reader.IsDBNull("channel_user") ? "" : reader.GetString("channel_user");
+
+        //            // Get channel name using the existing method
+        //            var channelName = GetChannelName(channelUser);
+
+        //            var actionData = $"data-id='{id}' data-token-id='{tokenId}' data-session-id='{uid}'";
+
+        //            results.Add(new[]
+        //            {
+        //        name,
+        //        documentId,
+        //        uid,
+        //        $"<a {actionData} data-type='OCRFile' href='#'>See OCR File</a>",
+        //        $"<a {actionData} data-type='LivenesssOutput' href='#'>See Liveness Output</a>",
+        //        $"<a {actionData} data-type='AuditContent' href='#'>See Audit Content</a>",
+        //        $"<a {actionData} data-type='LineInformation' href='#'>See Line Information</a>",
+        //        $"<a {actionData} data-type='Media' href='#'>See Media</a>",
+        //        $"<a {actionData} data-type='SessionSteps' href='#'>See Session Steps</a>",
+        //        currentStep,
+        //        channelName, // Added channel information
+        //        $"<a href='http://192.168.190.36/#/events?filter={uid}' target='_blank'>Go To Logs</a>",
+        //        creationTime,
+        //        status
+        //    });
+        //        }
+
+        //        return Ok(new AjaxResponseModel
+        //        {
+        //            data = results.ToArray(),
+        //            draw = Model.draw,
+        //            recordsTotal = totalCount.ToString(),
+        //            recordsFiltered = totalCount.ToString()
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Error in GetIndexData: {ex.Message}");
+        //        return BadRequest(new { error = ex.Message });
+        //    }
+        //}
+
         //public async Task<IActionResult> GetIndexData([FromForm] AjaxPostModel Model)
         //{
         //    try
@@ -845,13 +1086,941 @@ namespace EkycInquiry.Controllers
         [HttpGet]
         public async Task<IActionResult> SummaryDashboard()
         {
-            return View("Summary");
+            return View("EnhancedSummary");
         }
 
         private async Task<TRCSessionModel> GetTRCReportData(bool isToday)
         {
             DateTime timespan = isToday ? DateTime.Today : DateTime.Now.AddDays(-30); // Changed from Dec 2024 to last 30 days
             return await GetRevampedTRCReportData(timespan);
+        }
+        //[HttpPost]
+        //public async Task<IActionResult> GetAdvancedSummaryData([FromBody] SummaryFilterRequest request)
+        //{
+        //    try
+        //    {
+        //        DateTime fromDate = request.FromDate ?? DateTime.UtcNow.AddDays(-30);
+        //        DateTime toDate = request.ToDate ?? DateTime.UtcNow;
+
+        //        // Convert to unspecified kind for PostgreSQL timestamp without time zone
+        //        fromDate = DateTime.SpecifyKind(fromDate, DateTimeKind.Unspecified);
+        //        toDate = DateTime.SpecifyKind(toDate.AddDays(1), DateTimeKind.Unspecified); // Include full day
+
+        //        // Limit to 3 months for performance
+        //        if ((toDate - fromDate).TotalDays > 90)
+        //        {
+        //            fromDate = toDate.AddDays(-90);
+        //        }
+
+        //        // Build WHERE clause with named parameters
+        //        var whereConditions = new List<string>
+        //{
+        //    @"s.""creationTime"" >= @fromDate",
+        //    @"s.""creationTime"" <= @toDate"
+        //};
+
+        //        var parameters = new List<object>
+        //{
+        //    new NpgsqlParameter("@fromDate", NpgsqlDbType.Timestamp) { Value = DateTime.SpecifyKind(fromDate, DateTimeKind.Unspecified) },
+        //    new NpgsqlParameter("@toDate", NpgsqlDbType.Timestamp) { Value = DateTime.SpecifyKind(toDate, DateTimeKind.Unspecified) }
+        //};
+
+        //        if (!string.IsNullOrEmpty(request.Status))
+        //        {
+        //            whereConditions.Add(@"s.""status"" = @status");
+        //            parameters.Add(new NpgsqlParameter("@status", NpgsqlDbType.Text) { Value = request.Status });
+        //        }
+
+        //        if (!string.IsNullOrEmpty(request.Flow))
+        //        {
+        //            whereConditions.Add(@"l.""flow""::text = @flow");
+        //            parameters.Add(new NpgsqlParameter("@flow", NpgsqlDbType.Text) { Value = request.Flow });
+        //        }
+
+        //        if (!string.IsNullOrEmpty(request.Channel))
+        //        {
+        //            whereConditions.Add(@"T.""userCreationEmail"" = @channel");
+        //            parameters.Add(new NpgsqlParameter("@channel", NpgsqlDbType.Text) { Value = request.Channel });
+        //        }
+
+        //        string whereClause = string.Join(" AND ", whereConditions);
+
+        //        var sql = $@"
+        //WITH filtered_sessions AS (
+        //    SELECT 
+        //        s.id, s.uid, s.status, s.""creationTime"",
+        //        s.""ocrData"",
+        //        l.flow::text as flow,
+        //        T.""userCreationEmail"" as channel,
+        //        EXTRACT(HOUR FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as hour_of_day,
+        //        EXTRACT(DOW FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as day_of_week,
+        //        DATE(s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as session_date,
+        //        CASE WHEN s.""ocrData"" ? 'code' THEN 'non_jordanian' ELSE 'jordanian' END as nationality_type
+        //    FROM zain.""Session"" s
+        //    LEFT JOIN ""zain-custom"".""Line"" l ON s.uid = l.uid
+        //    INNER JOIN zain.""Token"" T ON T.id = s.""tokenId""
+        //    WHERE {whereClause}
+        //),
+        //workflow_data AS (
+        //    SELECT DISTINCT ON (sw.""sessionId"")
+        //        sw.""sessionId"",
+        //        ss.uid as step_uid,
+        //        ss.""index"" + 1 as step_number,
+        //        CASE 
+        //            WHEN ss.""index"" + 1 = 1 THEN 'scan_barcode'
+        //            WHEN ss.""index"" + 1 = 2 THEN 'sim_selection'
+        //            WHEN ss.""index"" + 1 = 3 THEN 'policy'
+        //            WHEN ss.""index"" + 1 = 4 THEN 'document'
+        //            WHEN ss.""index"" + 1 = 5 THEN 'ocr_summary'
+        //            WHEN ss.""index"" + 1 = 6 THEN 'self_recording'
+        //            WHEN ss.""index"" + 1 = 7 THEN 'identification_completed'
+        //            WHEN ss.""index"" + 1 = 8 THEN 'package_selection'
+        //            WHEN ss.""index"" + 1 = 9 THEN 'payment'
+        //            ELSE 'unknown'
+        //        END AS step_name
+        //    FROM zain.""SessionWorkflow"" sw
+        //    INNER JOIN zain.""SessionStep"" ss ON sw.id = ss.""sessionWorkflowId""
+        //    WHERE ss.active = true
+        //    ORDER BY sw.""sessionId"", ss.""index"" DESC
+        //)
+        //SELECT json_build_object(
+        //    'total_sessions', (SELECT COUNT(*) FROM filtered_sessions),
+        //    'status_breakdown', (
+        //        SELECT json_agg(json_build_object('status', status, 'count', count, 'percentage', round((count::decimal / total_count * 100), 2)))
+        //        FROM (
+        //            SELECT status, COUNT(*) as count, 
+        //                   (SELECT COUNT(*) FROM filtered_sessions) as total_count
+        //            FROM filtered_sessions 
+        //            GROUP BY status
+        //        ) status_stats
+        //    ),
+        //    'hourly_distribution', (
+        //        SELECT json_agg(json_build_object('hour', hour_of_day, 'count', count))
+        //        FROM (
+        //            SELECT hour_of_day, COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY hour_of_day
+        //            ORDER BY hour_of_day
+        //        ) hourly_stats
+        //    ),
+        //    'daily_distribution', (
+        //        SELECT json_agg(json_build_object('day', day_name, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE day_of_week
+        //                    WHEN 0 THEN 'Sunday'
+        //                    WHEN 1 THEN 'Monday'
+        //                    WHEN 2 THEN 'Tuesday'
+        //                    WHEN 3 THEN 'Wednesday'
+        //                    WHEN 4 THEN 'Thursday'
+        //                    WHEN 5 THEN 'Friday'
+        //                    WHEN 6 THEN 'Saturday'
+        //                END as day_name,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY day_of_week
+        //            ORDER BY day_of_week
+        //        ) daily_stats
+        //    ),
+        //    'time_series', (
+        //        SELECT json_agg(json_build_object(
+        //            'date', session_date,
+        //            'total', total_count,
+        //            'approved', approved_count,
+        //            'pending', pending_count,
+        //            'rejected', rejected_count,
+        //            'working', working_count
+        //        ) ORDER BY session_date)
+        //        FROM (
+        //            SELECT 
+        //                session_date,
+        //                COUNT(*) as total_count,
+        //                COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
+        //                COUNT(*) FILTER (WHERE status = 'approval_pending') as pending_count,
+        //                COUNT(*) FILTER (WHERE status = 'to_discard') as rejected_count,
+        //                COUNT(*) FILTER (WHERE status = 'working') as working_count
+        //            FROM filtered_sessions
+        //            GROUP BY session_date
+        //            ORDER BY session_date
+        //        ) time_series_data
+        //    ),
+        //    'flow_distribution', (
+        //        SELECT json_agg(json_build_object('flow', COALESCE(flow, 'Integration'), 'count', count))
+        //        FROM (
+        //            SELECT flow, COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY flow
+        //        ) flow_stats
+        //    ),
+        //    'channel_distribution', (
+        //        SELECT json_agg(json_build_object('channel', channel_name, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE channel
+        //                    WHEN 'consumer-shop-crm@079.jo' THEN 'Shops Process'
+        //                    WHEN 'consumer-shop@079.jo' THEN 'eShop'
+        //                    WHEN 'consumer@jo.zain.com' THEN 'API Layer'
+        //                    ELSE '079.jo'
+        //                END as channel_name,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY channel
+        //        ) channel_stats
+        //    ),
+        //    'nationality_distribution', (
+        //        SELECT json_agg(json_build_object('nationality', nationality_label, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE nationality_type
+        //                    WHEN 'jordanian' THEN 'Jordanian'
+        //                    WHEN 'non_jordanian' THEN 'Non-Jordanian'
+        //                    ELSE 'Unknown'
+        //                END as nationality_label,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY nationality_type
+        //        ) nationality_stats
+        //    ),
+        //    'step_completion', (
+        //        SELECT json_agg(json_build_object('step', step_name, 'count', count))
+        //        FROM (
+        //            SELECT wd.step_name, COUNT(*) as count
+        //            FROM filtered_sessions fs
+        //            INNER JOIN workflow_data wd ON fs.id = wd.""sessionId""
+        //            GROUP BY wd.step_name
+        //            ORDER BY AVG(wd.step_number)
+        //        ) step_stats
+        //    ),
+        //    'peak_hours', (
+        //        SELECT json_agg(json_build_object('hour', hour_of_day, 'count', count, 'rank', rank))
+        //        FROM (
+        //            SELECT hour_of_day, COUNT(*) as count,
+        //                   ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as rank
+        //            FROM filtered_sessions
+        //            GROUP BY hour_of_day
+        //            ORDER BY count DESC
+        //            LIMIT 5
+        //        ) peak_hours_data
+        //    ),
+        //    'success_rate', (
+        //        SELECT json_build_object(
+        //            'total_processed', COUNT(*),
+        //            'successful', COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending')),
+        //            'failed', COUNT(*) FILTER (WHERE status = 'to_discard'),
+        //            'success_percentage', round((COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending'))::decimal / COUNT(*) * 100), 2)
+        //        )
+        //        FROM filtered_sessions
+        //        WHERE status != 'working'
+        //    )
+        //) as summary_data";
+
+        //        var summaryResult = await WidContext.Database
+        //            .SqlQueryRaw<AdvancedSummaryResult>(sql, parameters.ToArray())
+        //            .FirstOrDefaultAsync();
+
+        //        return Ok(new
+        //        {
+        //            Status = 0,
+        //            Data = JsonConvert.DeserializeObject(summaryResult.summary_data)
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Error in GetAdvancedSummaryData: {ex.Message}");
+        //        return Ok(new { Status = -1, Message = ex.Message });
+        //    }
+        //}
+
+        //[HttpPost]
+        //public async Task<IActionResult> GetAdvancedSummaryData([FromBody] SummaryFilterRequest request)
+        //{
+        //    try
+        //    {
+        //        DateTime fromDate = request.FromDate ?? DateTime.UtcNow.AddDays(-30);
+        //        DateTime toDate = request.ToDate ?? DateTime.UtcNow;
+
+        //        // Convert to unspecified kind for PostgreSQL timestamp without time zone
+        //        fromDate = DateTime.SpecifyKind(fromDate, DateTimeKind.Unspecified);
+        //        toDate = DateTime.SpecifyKind(toDate.AddDays(1), DateTimeKind.Unspecified); // Include full day
+
+        //        // Limit to 3 months for performance
+        //        if ((toDate - fromDate).TotalDays > 90)
+        //        {
+        //            fromDate = toDate.AddDays(-90);
+        //        }
+
+        //        // Build WHERE clause with named parameters
+        //        var whereConditions = new List<string>
+        //{
+        //    @"s.""creationTime"" >= @fromDate",
+        //    @"s.""creationTime"" <= @toDate"
+        //};
+
+        //        var parameters = new List<object>
+        //{
+        //    new NpgsqlParameter("@fromDate", NpgsqlDbType.Timestamp) { Value = fromDate },
+        //    new NpgsqlParameter("@toDate", NpgsqlDbType.Timestamp) { Value = toDate }
+        //};
+
+        //        if (!string.IsNullOrEmpty(request.Status))
+        //        {
+        //            whereConditions.Add(@"s.""status"" = @status");
+        //            parameters.Add(new NpgsqlParameter("@status", NpgsqlDbType.Text) { Value = request.Status });
+        //        }
+
+        //        if (!string.IsNullOrEmpty(request.Flow))
+        //        {
+        //            whereConditions.Add(@"l.""flow""::text = @flow");
+        //            parameters.Add(new NpgsqlParameter("@flow", NpgsqlDbType.Text) { Value = request.Flow });
+        //        }
+
+        //        if (!string.IsNullOrEmpty(request.Channel))
+        //        {
+        //            whereConditions.Add(@"T.""userCreationEmail"" = @channel");
+        //            parameters.Add(new NpgsqlParameter("@channel", NpgsqlDbType.Text) { Value = request.Channel });
+        //        }
+
+        //        string whereClause = string.Join(" AND ", whereConditions);
+
+        //        var sql = $@"
+        //WITH filtered_sessions AS (
+        //    SELECT 
+        //        s.id, s.uid, s.status, s.""creationTime"",
+        //        s.""ocrData"",
+        //        l.flow::text as flow,
+        //        T.""userCreationEmail"" as channel,
+        //        EXTRACT(HOUR FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as hour_of_day,
+        //        EXTRACT(DOW FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as day_of_week,
+        //        DATE(s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as session_date,
+        //        CASE WHEN s.""ocrData"" ? 'code' THEN 'non_jordanian' ELSE 'jordanian' END as nationality_type
+        //    FROM zain.""Session"" s
+        //    LEFT JOIN ""zain-custom"".""Line"" l ON s.uid = l.uid
+        //    INNER JOIN zain.""Token"" T ON T.id = s.""tokenId""
+        //    WHERE {whereClause}
+        //),
+        //workflow_data AS (
+        //    SELECT DISTINCT ON (sw.""sessionId"")
+        //        sw.""sessionId"",
+        //        ss.uid as step_uid,
+        //        ss.""index"" + 1 as step_number,
+        //        CASE 
+        //            WHEN ss.""index"" + 1 = 1 THEN 'scan_barcode'
+        //            WHEN ss.""index"" + 1 = 2 THEN 'sim_selection'
+        //            WHEN ss.""index"" + 1 = 3 THEN 'policy'
+        //            WHEN ss.""index"" + 1 = 4 THEN 'document'
+        //            WHEN ss.""index"" + 1 = 5 THEN 'ocr_summary'
+        //            WHEN ss.""index"" + 1 = 6 THEN 'self_recording'
+        //            WHEN ss.""index"" + 1 = 7 THEN 'identification_completed'
+        //            WHEN ss.""index"" + 1 = 8 THEN 'package_selection'
+        //            WHEN ss.""index"" + 1 = 9 THEN 'payment'
+        //            ELSE 'unknown'
+        //        END AS step_name
+        //    FROM zain.""SessionWorkflow"" sw
+        //    INNER JOIN zain.""SessionStep"" ss ON sw.id = ss.""sessionWorkflowId""
+        //    WHERE ss.active = true
+        //    ORDER BY sw.""sessionId"", ss.""index"" DESC
+        //)
+        //SELECT json_build_object(
+        //    'total_sessions', (SELECT COUNT(*) FROM filtered_sessions),
+        //    'status_breakdown', (
+        //        SELECT json_agg(json_build_object('status', status, 'count', count, 'percentage', round((count::decimal / total_count * 100), 2)))
+        //        FROM (
+        //            SELECT status, COUNT(*) as count, 
+        //                   (SELECT COUNT(*) FROM filtered_sessions) as total_count
+        //            FROM filtered_sessions 
+        //            GROUP BY status
+        //        ) status_stats
+        //    ),
+        //    'hourly_distribution', (
+        //        SELECT json_agg(json_build_object('hour', hour_of_day, 'count', count))
+        //        FROM (
+        //            SELECT hour_of_day, COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY hour_of_day
+        //            ORDER BY hour_of_day
+        //        ) hourly_stats
+        //    ),
+        //    'daily_distribution', (
+        //        SELECT json_agg(json_build_object('day', day_name, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE day_of_week
+        //                    WHEN 0 THEN 'Sunday'
+        //                    WHEN 1 THEN 'Monday'
+        //                    WHEN 2 THEN 'Tuesday'
+        //                    WHEN 3 THEN 'Wednesday'
+        //                    WHEN 4 THEN 'Thursday'
+        //                    WHEN 5 THEN 'Friday'
+        //                    WHEN 6 THEN 'Saturday'
+        //                END as day_name,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY day_of_week
+        //            ORDER BY day_of_week
+        //        ) daily_stats
+        //    ),
+        //    'time_series', (
+        //        SELECT json_agg(json_build_object(
+        //            'date', session_date,
+        //            'total', total_count,
+        //            'approved', approved_count,
+        //            'pending', pending_count,
+        //            'rejected', rejected_count,
+        //            'working', working_count
+        //        ) ORDER BY session_date)
+        //        FROM (
+        //            SELECT 
+        //                session_date,
+        //                COUNT(*) as total_count,
+        //                COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
+        //                COUNT(*) FILTER (WHERE status = 'approval_pending') as pending_count,
+        //                COUNT(*) FILTER (WHERE status = 'to_discard') as rejected_count,
+        //                COUNT(*) FILTER (WHERE status = 'working') as working_count
+        //            FROM filtered_sessions
+        //            GROUP BY session_date
+        //            ORDER BY session_date
+        //        ) time_series_data
+        //    ),
+        //    'flow_distribution', (
+        //        SELECT json_agg(json_build_object('flow', COALESCE(flow, 'Integration'), 'count', count))
+        //        FROM (
+        //            SELECT flow, COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY flow
+        //        ) flow_stats
+        //    ),
+        //    'channel_distribution', (
+        //        SELECT json_agg(json_build_object('channel', channel_name, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE channel
+        //                    WHEN 'consumer-shop-crm@079.jo' THEN 'Shops Process'
+        //                    WHEN 'consumer-shop@079.jo' THEN 'eShop'
+        //                    WHEN 'consumer@jo.zain.com' THEN 'API Layer'
+        //                    ELSE '079.jo'
+        //                END as channel_name,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY channel
+        //        ) channel_stats
+        //    ),
+        //    'nationality_distribution', (
+        //        SELECT json_agg(json_build_object('nationality', nationality_label, 'count', count))
+        //        FROM (
+        //            SELECT 
+        //                CASE nationality_type
+        //                    WHEN 'jordanian' THEN 'Jordanian'
+        //                    WHEN 'non_jordanian' THEN 'Non-Jordanian'
+        //                    ELSE 'Unknown'
+        //                END as nationality_label,
+        //                COUNT(*) as count
+        //            FROM filtered_sessions
+        //            GROUP BY nationality_type
+        //        ) nationality_stats
+        //    ),
+        //    'step_completion', (
+        //        SELECT json_agg(json_build_object('step', step_name, 'count', count))
+        //        FROM (
+        //            SELECT wd.step_name, COUNT(*) as count
+        //            FROM filtered_sessions fs
+        //            INNER JOIN workflow_data wd ON fs.id = wd.""sessionId""
+        //            GROUP BY wd.step_name
+        //            ORDER BY AVG(wd.step_number)
+        //        ) step_stats
+        //    ),
+        //    'peak_hours', (
+        //        SELECT json_agg(json_build_object('hour', hour_of_day, 'count', count, 'rank', rank))
+        //        FROM (
+        //            SELECT hour_of_day, COUNT(*) as count,
+        //                   ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as rank
+        //            FROM filtered_sessions
+        //            GROUP BY hour_of_day
+        //            ORDER BY count DESC
+        //            LIMIT 5
+        //        ) peak_hours_data
+        //    ),
+        //    'success_rate', (
+        //        SELECT json_build_object(
+        //            'total_processed', COUNT(*),
+        //            'successful', COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending')),
+        //            'failed', COUNT(*) FILTER (WHERE status = 'to_discard'),
+        //            'success_percentage', round((COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending'))::decimal / COUNT(*) * 100), 2)
+        //        )
+        //        FROM filtered_sessions
+        //        WHERE status != 'working'
+        //    )
+        //)::text as result";
+
+        //        // Execute the query and get the JSON string directly
+        //        using var connection = WidContext.Database.GetDbConnection();
+        //        await connection.OpenAsync();
+
+        //        using var command = connection.CreateCommand();
+        //        command.CommandText = sql;
+        //        command.Parameters.AddRange(parameters.ToArray());
+
+        //        var jsonResult = await command.ExecuteScalarAsync() as string;
+
+        //        if (string.IsNullOrEmpty(jsonResult))
+        //        {
+        //            return Ok(new { Status = -1, Message = "No data returned from query" });
+        //        }
+
+        //        // Parse the JSON string to object
+        //        var data = JsonConvert.DeserializeObject(jsonResult);
+
+        //        return Ok(new
+        //        {
+        //            Status = 0,
+        //            Data = data
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Error in GetAdvancedSummaryData: {ex.Message}");
+        //        return Ok(new { Status = -1, Message = ex.Message });
+        //    }
+        //}
+        //[HttpGet]
+        //public async Task<IActionResult> GetFilterOptions()
+        //{
+        //    try
+        //    {
+        //        var filterOptions = await WidContext.Database.SqlQuery<FilterOptionsResult>($$$"""
+        //    WITH recent_data AS (
+        //        SELECT DISTINCT
+        //            s.status,
+        //            l.flow,
+        //            T."userCreationEmail" as channel
+        //        FROM zain."Session" s
+        //        LEFT JOIN "zain-custom"."Line" l ON s.uid = l.uid
+        //        INNER JOIN zain."Token" T ON T.id = s."tokenId"
+        //        WHERE s."creationTime" >= NOW() - INTERVAL '6 months'
+        //    )
+        //    SELECT json_build_object(
+        //        'statuses', (
+        //            SELECT json_agg(DISTINCT status ORDER BY status)
+        //            FROM recent_data
+        //            WHERE status IS NOT NULL
+        //        ),
+        //        'flows', (
+        //            SELECT json_agg(DISTINCT flow ORDER BY flow)
+        //            FROM recent_data
+        //            WHERE flow IS NOT NULL
+        //        ),
+        //        'channels', (
+        //            SELECT json_agg(json_build_object(
+        //                'value', channel,
+        //                'label', CASE channel
+        //                    WHEN 'consumer-shop-crm@079.jo' THEN 'Shops Process'
+        //                    WHEN 'consumer-shop@079.jo' THEN 'eShop'
+        //                    WHEN 'consumer@jo.zain.com' THEN 'API Layer'
+        //                    ELSE '079.jo'
+        //                END
+        //            ) ORDER BY channel)
+        //            FROM (SELECT DISTINCT channel FROM recent_data WHERE channel IS NOT NULL) channels
+        //        )
+        //    ) as filter_options
+        //    """).FirstOrDefaultAsync();
+
+        //        return Ok(new
+        //        {
+        //            Status = 0,
+        //            Data = JsonConvert.DeserializeObject(filterOptions.filter_options)
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Error in GetFilterOptions: {ex.Message}");
+        //        return Ok(new { Status = -1, Message = ex.Message });
+        //    }
+        //}
+        [HttpPost]
+        public async Task<IActionResult> GetAdvancedSummaryData([FromBody] SummaryFilterRequest request)
+        {
+            try
+            {
+                DateTime fromDate = request.FromDate ?? DateTime.UtcNow.AddDays(-30);
+                DateTime toDate = request.ToDate ?? DateTime.UtcNow;
+
+                // Convert to unspecified kind for PostgreSQL timestamp without time zone
+                fromDate = DateTime.SpecifyKind(fromDate, DateTimeKind.Unspecified);
+                toDate = DateTime.SpecifyKind(toDate.AddDays(1), DateTimeKind.Unspecified); // Include full day
+
+                // Limit to 3 months for performance
+                if ((toDate - fromDate).TotalDays > 90)
+                {
+                    fromDate = toDate.AddDays(-90);
+                }
+
+                // Build WHERE clause with named parameters
+                var whereConditions = new List<string>
+        {
+            @"s.""creationTime"" >= @fromDate",
+            @"s.""creationTime"" <= @toDate"
+        };
+
+                var parameters = new List<object>
+        {
+            new NpgsqlParameter("@fromDate", NpgsqlDbType.Timestamp) { Value = fromDate },
+            new NpgsqlParameter("@toDate", NpgsqlDbType.Timestamp) { Value = toDate }
+        };
+
+                if (!string.IsNullOrEmpty(request.Status))
+                {
+                    whereConditions.Add(@"s.""status"" = @status");
+                    parameters.Add(new NpgsqlParameter("@status", NpgsqlDbType.Text) { Value = request.Status });
+                }
+
+                if (!string.IsNullOrEmpty(request.Flow))
+                {
+                    whereConditions.Add(@"l.""flow""::text = @flow");
+                    parameters.Add(new NpgsqlParameter("@flow", NpgsqlDbType.Text) { Value = request.Flow });
+                }
+
+                if (!string.IsNullOrEmpty(request.Channel))
+                {
+                    whereConditions.Add(@"T.""userCreationEmail"" = @channel");
+                    parameters.Add(new NpgsqlParameter("@channel", NpgsqlDbType.Text) { Value = request.Channel });
+                }
+
+                string whereClause = string.Join(" AND ", whereConditions);
+
+                var sql = $@"
+        WITH filtered_sessions AS (
+            SELECT 
+                s.id, s.uid, s.status, s.""creationTime"",
+                s.""ocrData"",
+                l.flow::text as flow,
+                T.""userCreationEmail"" as channel,
+                EXTRACT(HOUR FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as hour_of_day,
+                EXTRACT(DOW FROM s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as day_of_week,
+                DATE(s.""creationTime"" AT TIME ZONE 'UTC' AT TIME ZONE '+03:00') as session_date,
+                CASE WHEN s.""ocrData"" ? 'code' THEN 'non_jordanian' ELSE 'jordanian' END as nationality_type
+            FROM zain.""Session"" s
+            LEFT JOIN ""zain-custom"".""Line"" l ON s.uid = l.uid
+            INNER JOIN zain.""Token"" T ON T.id = s.""tokenId""
+            WHERE {whereClause}
+        ),
+        workflow_data AS (
+            SELECT DISTINCT ON (sw.""sessionId"")
+                sw.""sessionId"",
+                ss.uid as step_uid,
+                ss.""index"" + 1 as step_number,
+                CASE 
+                    WHEN ss.""index"" + 1 = 1 THEN 'scan_barcode'
+                    WHEN ss.""index"" + 1 = 2 THEN 'sim_selection'
+                    WHEN ss.""index"" + 1 = 3 THEN 'policy'
+                    WHEN ss.""index"" + 1 = 4 THEN 'document'
+                    WHEN ss.""index"" + 1 = 5 THEN 'ocr_summary'
+                    WHEN ss.""index"" + 1 = 6 THEN 'self_recording'
+                    WHEN ss.""index"" + 1 = 7 THEN 'identification_completed'
+                    WHEN ss.""index"" + 1 = 8 THEN 'package_selection'
+                    WHEN ss.""index"" + 1 = 9 THEN 'payment'
+                    ELSE 'unknown'
+                END AS step_name
+            FROM zain.""SessionWorkflow"" sw
+            INNER JOIN zain.""SessionStep"" ss ON sw.id = ss.""sessionWorkflowId""
+            WHERE ss.active = true
+            ORDER BY sw.""sessionId"", ss.""index"" DESC
+        )
+        SELECT json_build_object(
+            'total_sessions', (SELECT COUNT(*) FROM filtered_sessions),
+            'status_breakdown', (
+                SELECT COALESCE(json_agg(json_build_object('status', status, 'count', count, 'percentage', round((count::decimal / total_count * 100), 2))), '[]'::json)
+                FROM (
+                    SELECT status, COUNT(*) as count, 
+                           (SELECT COUNT(*) FROM filtered_sessions) as total_count
+                    FROM filtered_sessions 
+                    GROUP BY status
+                ) status_stats
+            ),
+            'hourly_distribution', (
+                SELECT COALESCE(json_agg(json_build_object('hour', hour_of_day, 'count', count)), '[]'::json)
+                FROM (
+                    SELECT hour_of_day, COUNT(*) as count
+                    FROM filtered_sessions
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
+                ) hourly_stats
+            ),
+            'daily_distribution', (
+                SELECT COALESCE(json_agg(json_build_object('day', day_name, 'count', count)), '[]'::json)
+                FROM (
+                    SELECT 
+                        CASE day_of_week
+                            WHEN 0 THEN 'Sunday'
+                            WHEN 1 THEN 'Monday'
+                            WHEN 2 THEN 'Tuesday'
+                            WHEN 3 THEN 'Wednesday'
+                            WHEN 4 THEN 'Thursday'
+                            WHEN 5 THEN 'Friday'
+                            WHEN 6 THEN 'Saturday'
+                        END as day_name,
+                        COUNT(*) as count
+                    FROM filtered_sessions
+                    GROUP BY day_of_week
+                    ORDER BY day_of_week
+                ) daily_stats
+            ),
+            'time_series', (
+                SELECT COALESCE(json_agg(json_build_object(
+                    'date', session_date,
+                    'total', total_count,
+                    'approved', approved_count,
+                    'pending', pending_count,
+                    'rejected', rejected_count,
+                    'working', working_count
+                ) ORDER BY session_date), '[]'::json)
+                FROM (
+                    SELECT 
+                        session_date,
+                        COUNT(*) as total_count,
+                        COUNT(*) FILTER (WHERE status = 'approved') as approved_count,
+                        COUNT(*) FILTER (WHERE status = 'approval_pending') as pending_count,
+                        COUNT(*) FILTER (WHERE status = 'to_discard') as rejected_count,
+                        COUNT(*) FILTER (WHERE status = 'working') as working_count
+                    FROM filtered_sessions
+                    GROUP BY session_date
+                    ORDER BY session_date
+                ) time_series_data
+            ),
+            'flow_distribution', (
+                SELECT COALESCE(json_agg(json_build_object('flow', COALESCE(flow, 'Integration'), 'count', count)), '[]'::json)
+                FROM (
+                    SELECT flow, COUNT(*) as count
+                    FROM filtered_sessions
+                    GROUP BY flow
+                ) flow_stats
+            ),
+            'channel_distribution', (
+                SELECT COALESCE(json_agg(json_build_object('channel', channel_name, 'count', count)), '[]'::json)
+                FROM (
+                    SELECT 
+                        CASE channel
+                            WHEN 'consumer-shop-crm@079.jo' THEN 'Shops Process'
+                            WHEN 'consumer-shop@079.jo' THEN 'eShop'
+                            WHEN 'consumer@jo.zain.com' THEN 'API Layer'
+                            ELSE '079.jo'
+                        END as channel_name,
+                        COUNT(*) as count
+                    FROM filtered_sessions
+                    GROUP BY channel
+                ) channel_stats
+            ),
+            'nationality_distribution', (
+                SELECT COALESCE(json_agg(json_build_object('nationality', nationality_label, 'count', count)), '[]'::json)
+                FROM (
+                    SELECT 
+                        CASE nationality_type
+                            WHEN 'jordanian' THEN 'Jordanian'
+                            WHEN 'non_jordanian' THEN 'Non-Jordanian'
+                            ELSE 'Unknown'
+                        END as nationality_label,
+                        COUNT(*) as count
+                    FROM filtered_sessions
+                    GROUP BY nationality_type
+                ) nationality_stats
+            ),
+            'step_completion', (
+                SELECT COALESCE(json_agg(json_build_object('step', step_name, 'count', count)), '[]'::json)
+                FROM (
+                    SELECT wd.step_name, COUNT(*) as count
+                    FROM filtered_sessions fs
+                    INNER JOIN workflow_data wd ON fs.id = wd.""sessionId""
+                    GROUP BY wd.step_name
+                    ORDER BY AVG(wd.step_number)
+                ) step_stats
+            ),
+            'peak_hours', (
+                SELECT COALESCE(json_agg(json_build_object('hour', hour_of_day, 'count', count, 'rank', rank)), '[]'::json)
+                FROM (
+                    SELECT hour_of_day, COUNT(*) as count,
+                           ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as rank
+                    FROM filtered_sessions
+                    GROUP BY hour_of_day
+                    ORDER BY count DESC
+                    LIMIT 5
+                ) peak_hours_data
+            ),
+            'success_rate', (
+                SELECT json_build_object(
+                    'total_processed', COALESCE(COUNT(*), 0),
+                    'successful', COALESCE(COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending')), 0),
+                    'failed', COALESCE(COUNT(*) FILTER (WHERE status = 'to_discard'), 0),
+                    'success_percentage', CASE 
+                        WHEN COUNT(*) > 0 THEN round((COUNT(*) FILTER (WHERE status IN ('approved', 'approval_pending'))::decimal / COUNT(*) * 100), 2)
+                        ELSE 0
+                    END
+                )
+                FROM filtered_sessions
+                WHERE status != 'working'
+            )
+        )::text as result";
+
+                // Execute the query and get the JSON string directly
+                using var connection = WidContext.Database.GetDbConnection();
+                await connection.OpenAsync();
+
+                using var command = connection.CreateCommand();
+                command.CommandText = sql;
+                command.Parameters.AddRange(parameters.ToArray());
+
+                var jsonResult = await command.ExecuteScalarAsync() as string;
+
+                if (string.IsNullOrEmpty(jsonResult))
+                {
+                    return Ok(new
+                    {
+                        Status = -1,
+                        Message = "No data returned from query",
+                        Data = new AdvancedSummaryResponse() // Return empty structure
+                    });
+                }
+
+                try
+                {
+                    // Parse the JSON string properly using JObject first, then convert to strongly typed
+                    var jsonObject = JObject.Parse(jsonResult);
+                    var data = jsonObject.ToObject<AdvancedSummaryResponse>();
+
+                    return Ok(new
+                    {
+                        Status = 0,
+                        Data = data
+                    });
+                }
+                catch (JsonException jsonEx)
+                {
+                    Console.WriteLine($"JSON parsing error: {jsonEx.Message}");
+                    Console.WriteLine($"Raw JSON: {jsonResult}");
+
+                    // Fallback: return raw parsed JSON
+                    var fallbackData = JObject.Parse(jsonResult);
+                    return Ok(new
+                    {
+                        Status = 0,
+                        Data = fallbackData
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetAdvancedSummaryData: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                return Ok(new
+                {
+                    Status = -1,
+                    Message = ex.Message,
+                    Data = new AdvancedSummaryResponse() // Return empty structure even on error
+                });
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetFilterOptions()
+        {
+            try
+            {
+                var filterOptions = await WidContext.Database.SqlQuery<FilterOptionsResult>($$$"""
+            WITH recent_data AS (
+                SELECT DISTINCT
+                    s.status,
+                    l.flow,
+                    T."userCreationEmail" as channel
+                FROM zain."Session" s
+                LEFT JOIN "zain-custom"."Line" l ON s.uid = l.uid
+                INNER JOIN zain."Token" T ON T.id = s."tokenId"
+                WHERE s."creationTime" >= NOW() - INTERVAL '6 months'
+            )
+            SELECT json_build_object(
+                'statuses', (
+                    SELECT COALESCE(json_agg(DISTINCT status ORDER BY status), '[]'::json)
+                    FROM recent_data
+                    WHERE status IS NOT NULL
+                ),
+                'flows', (
+                    SELECT COALESCE(json_agg(DISTINCT flow ORDER BY flow), '[]'::json)
+                    FROM recent_data
+                    WHERE flow IS NOT NULL
+                ),
+                'channels', (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'value', channel,
+                        'label', CASE channel
+                            WHEN 'consumer-shop-crm@079.jo' THEN 'Shops Process'
+                            WHEN 'consumer-shop@079.jo' THEN 'eShop'
+                            WHEN 'consumer@jo.zain.com' THEN 'API Layer'
+                            ELSE '079.jo'
+                        END
+                    ) ORDER BY channel), '[]'::json)
+                    FROM (SELECT DISTINCT channel FROM recent_data WHERE channel IS NOT NULL) channels
+                )
+            ) as filter_options
+            """).FirstOrDefaultAsync();
+
+                if (filterOptions?.filter_options == null)
+                {
+                    return Ok(new
+                    {
+                        Status = -1,
+                        Message = "No filter options available",
+                        Data = new FilterOptionsData()
+                    });
+                }
+
+                try
+                {
+                    var data = JsonConvert.DeserializeObject<FilterOptionsData>(filterOptions.filter_options);
+                    return Ok(new
+                    {
+                        Status = 0,
+                        Data = data
+                    });
+                }
+                catch (JsonException jsonEx)
+                {
+                    Console.WriteLine($"JSON parsing error in GetFilterOptions: {jsonEx.Message}");
+
+                    // Fallback: return raw parsed JSON
+                    var fallbackData = JObject.Parse(filterOptions.filter_options);
+                    return Ok(new
+                    {
+                        Status = 0,
+                        Data = fallbackData
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetFilterOptions: {ex.Message}");
+                return Ok(new
+                {
+                    Status = -1,
+                    Message = ex.Message,
+                    Data = new FilterOptionsData()
+                });
+            }
+        }
+
+        // Helper classes for the new methods
+        public class SummaryFilterRequest
+        {
+            public DateTime? FromDate { get; set; }
+            public DateTime? ToDate { get; set; }
+            public string? Status { get; set; }
+            public string? Flow { get; set; }
+            public string? Channel { get; set; }
+        }
+
+        public class AdvancedSummaryResult
+        {
+            public string summary_data { get; set; }
+        }
+
+        public class FilterOptionsResult
+        {
+            public string filter_options { get; set; }
         }
 
         // API METHODS WITH PERFORMANCE LIMITS
@@ -1266,5 +2435,189 @@ namespace EkycInquiry.Controllers
                 _ => "application/octet-stream"
             };
         }
+    }
+    public class AdvancedSummaryResponse
+    {
+        [JsonProperty("total_sessions")]
+        public int TotalSessions { get; set; }
+
+        [JsonProperty("status_breakdown")]
+        public List<StatusBreakdownItem> StatusBreakdown { get; set; } = new();
+
+        [JsonProperty("hourly_distribution")]
+        public List<HourlyDistributionItem> HourlyDistribution { get; set; } = new();
+
+        [JsonProperty("daily_distribution")]
+        public List<DailyDistributionItem> DailyDistribution { get; set; } = new();
+
+        [JsonProperty("time_series")]
+        public List<TimeSeriesItem> TimeSeries { get; set; } = new();
+
+        [JsonProperty("flow_distribution")]
+        public List<FlowDistributionItem> FlowDistribution { get; set; } = new();
+
+        [JsonProperty("channel_distribution")]
+        public List<ChannelDistributionItem> ChannelDistribution { get; set; } = new();
+
+        [JsonProperty("nationality_distribution")]
+        public List<NationalityDistributionItem> NationalityDistribution { get; set; } = new();
+
+        [JsonProperty("step_completion")]
+        public List<StepCompletionItem> StepCompletion { get; set; } = new();
+
+        [JsonProperty("peak_hours")]
+        public List<PeakHourItem> PeakHours { get; set; } = new();
+
+        [JsonProperty("success_rate")]
+        public SuccessRateData SuccessRate { get; set; } = new();
+    }
+    public class StatusBreakdownItem
+    {
+        [JsonProperty("status")]
+        public string Status { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+
+        [JsonProperty("percentage")]
+        public decimal Percentage { get; set; }
+    }
+
+    public class HourlyDistributionItem
+    {
+        [JsonProperty("hour")]
+        public int Hour { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class DailyDistributionItem
+    {
+        [JsonProperty("day")]
+        public string Day { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class TimeSeriesItem
+    {
+        [JsonProperty("date")]
+        public DateTime Date { get; set; }
+
+        [JsonProperty("total")]
+        public int Total { get; set; }
+
+        [JsonProperty("approved")]
+        public int Approved { get; set; }
+
+        [JsonProperty("pending")]
+        public int Pending { get; set; }
+
+        [JsonProperty("rejected")]
+        public int Rejected { get; set; }
+
+        [JsonProperty("working")]
+        public int Working { get; set; }
+    }
+
+    public class FlowDistributionItem
+    {
+        [JsonProperty("flow")]
+        public string Flow { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class ChannelDistributionItem
+    {
+        [JsonProperty("channel")]
+        public string Channel { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class NationalityDistributionItem
+    {
+        [JsonProperty("nationality")]
+        public string Nationality { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class StepCompletionItem
+    {
+        [JsonProperty("step")]
+        public string Step { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+    }
+
+    public class PeakHourItem
+    {
+        [JsonProperty("hour")]
+        public int Hour { get; set; }
+
+        [JsonProperty("count")]
+        public int Count { get; set; }
+
+        [JsonProperty("rank")]
+        public int Rank { get; set; }
+    }
+
+    public class SuccessRateData
+    {
+        [JsonProperty("total_processed")]
+        public int TotalProcessed { get; set; }
+
+        [JsonProperty("successful")]
+        public int Successful { get; set; }
+
+        [JsonProperty("failed")]
+        public int Failed { get; set; }
+
+        [JsonProperty("success_percentage")]
+        public decimal SuccessPercentage { get; set; }
+    }
+
+    public class SummaryFilterRequest
+    {
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+        public string Status { get; set; }
+        public string Flow { get; set; }
+        public string Channel { get; set; }
+    }
+
+    public class FilterOptionsResult
+    {
+        [JsonProperty("filter_options")]
+        public string filter_options { get; set; }
+    }
+
+    public class FilterOptionsData
+    {
+        [JsonProperty("statuses")]
+        public List<string> Statuses { get; set; } = new();
+
+        [JsonProperty("flows")]
+        public List<string> Flows { get; set; } = new();
+
+        [JsonProperty("channels")]
+        public List<ChannelOption> Channels { get; set; } = new();
+    }
+
+    public class ChannelOption
+    {
+        [JsonProperty("value")]
+        public string Value { get; set; }
+
+        [JsonProperty("label")]
+        public string Label { get; set; }
     }
 }
